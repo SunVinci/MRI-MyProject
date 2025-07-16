@@ -335,7 +335,6 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
         with h5py.File(str(fname),'r') as hf:
             kspace_volume = hf["kspace"]
             mask = np.asarray(hf["mask"]) if "mask" in hf else None
-            target = hf[self.recons_key][dataslice] if self.recons_key in hf else None
             attrs = dict(hf.attrs)
 
             num_slices = attrs['shape'][1]
@@ -343,9 +342,16 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
             if 'Cine' in str(fname):
                 slice_idx_list = self._get_frames_indices(dataslice, num_slices,num_t, is_lax=islax) 
             else:
-                slice_idx_list = self._get_frames_indices_mapping(dataslice, num_slices,num_t,isT2=isT2)  
+                slice_idx_list = self._get_frames_indices_mapping(dataslice, num_slices,num_t,isT2=isT2)
+
+            if self.recons_key in hf:
+                target = np.stack([hf[self.recons_key][idx] for idx in slice_idx_list])  # (nt, H, W)
+            else:
+                target = None
+
             for idx in slice_idx_list:
                 kspace.append(kspace_volume[idx])
+
             kspace = np.concatenate(kspace, axis=0)
 
         if self.transform is None:

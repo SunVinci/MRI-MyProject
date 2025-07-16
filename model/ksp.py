@@ -35,7 +35,6 @@ class KspNetAttention(nn.Module):
         self.conv3 = nn.Conv3d(16, out_ch * 2, kernel_size=3, padding=1)
 
     def forward(self, x_real, x_imag):
-        print("KspNetAttention forward, x_real.shape =", x_real.shape)
 
         # [B, T, H, W, C] -> [B, C, T, H, W]
         x_real = x_real.permute(0, 4, 1, 2, 3)  # (B, C, T, H, W)

@@ -7,6 +7,15 @@ from model.info_share_layer import InfoShareLayer, Scalar
 from model.image_lowrank_net import ComplexAttentionLSNet
 from model.utils import MulticoilForwardOp, MulticoilAdjointOp, complex_scale, ensure_complex_image
 
+import gc
+import tracemalloc
+import psutil, os
+
+def log_memory(tag=""):
+    process = psutil.Process(os.getpid())
+    ram = process.memory_info().rss / 1024**2
+    print(f"[MEM] {tag} | RAM: {ram:.2f} MB | GC objects: {len(gc.get_objects())}")
+
 
 class DCGD(nn.Module):
     def __init__(self):
@@ -34,7 +43,7 @@ class A_LIKNet(nn.Module):
         self.ksp_dc_weight = Scalar(init=0.5)
 
         self.ISL = nn.ModuleList([InfoShareLayer(center=True) for _ in range(num_iter)])
-        self.KspNet = nn.ModuleList([KspNetAttention(in_ch=15,out_ch=15) for _ in range(num_iter)])
+        self.KspNet = nn.ModuleList([KspNetAttention(in_ch=10,out_ch=10) for _ in range(num_iter)])
         self.ImgLrNet = nn.ModuleList([ComplexAttentionLSNet() for _ in range(num_iter)])
         self.ImgDC = nn.ModuleList([DCGD() for _ in range(num_iter)])
 
@@ -49,38 +58,31 @@ class A_LIKNet(nn.Module):
         return scaled_pred_ksp + scaled_sampled_ksp + other_points
 
     def update_xy(self, x, y, i, constants):
-
-        print("????????????????? X", x.shape, x.dtype)
-        print("????????????????? Y", y.shape, y.dtype)
-
-
         sub_y, mask, smaps = constants
         y_real = y.real
         y_imag = y.imag
-        y = self.KspNet[i](y_real, y_imag)
 
-        y = torch.complex(y_real, y_imag)
+        #log_memory(f"Start update_xy[{i}]")
+        y = self.KspNet[i](y_real, y_imag)
+        #log_memory(f"After  KspNet[{i}]")
 
         x = ensure_complex_image(x)
-
-        print("A_LIKNet ImLrNet x.shape",x.shape, x.dtype)
-
+        #log_memory(f"Before ImgLrNet[{i}]")
         x = self.ImgLrNet[i](x, self.S_end)
-
+        #log_memory(f"After  ImgLrNet[{i}]")
+        #log_memory(f"Before Ksp DC[{i}]")
         y = self.ksp_dc(y, mask, sub_y)
+        #log_memory(f"After  Ksp DC[{i}]")
 
-        print("A_LIKNet Before DC x", x.shape, x.dtype)
-
+        #log_memory(f"Before ImgDC[{i}]")
         x = self.ImgDC[i](x, sub_y, mask, smaps)
+        #log_memory(f"After  ImgDC[{i}]")
 
-        print("A_LIKNet Before ISL x", x.shape, x.dtype)
-        print("A_LIKNet Before ISL y", y.shape, y.dtype)
-
+        #log_memory(f"Before ISL[{i}]")
         x, y = self.ISL[i](x, y, mask, smaps)
+        #log_memory(f"After  ISL[{i}]")
 
-
-        print("!!!!!!!!!!!!!!!!! X", x.shape, x.dtype)
-        print("!!!!!!!!!!!!!!!!! Y", y.shape, y.dtype)
+        #log_memory(f"End update_xy[{i}]")
 
         return x, y
 

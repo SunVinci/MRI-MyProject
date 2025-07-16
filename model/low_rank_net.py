@@ -3,58 +3,104 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class LNetXYTBatch(nn.Module):
-    def __init__(self, num_patches):
+    def __init__(self, patch_size=(32, 32), max_batch_size=128):
         super().__init__()
-        self.num_patches = num_patches
-        self.thres_coef = nn.Parameter(torch.full((num_patches,), -2.0, dtype=torch.float32))
+        self.patch_size = patch_size
+        self.max_batch_size = max_batch_size
         self.min_sigma = 1e-6
 
-    def low_rank(self, L):
+        self.thres_mlp = nn.Sequential(
+            nn.Linear(1, 8),
+            nn.ReLU(),
+            nn.Linear(8, 1),
+            nn.Sigmoid()
+        )
 
-        nb, nt, n = L.shape
-        U, S, Vh = torch.linalg.svd(L, full_matrices=False)  # Vh: (nb, nt, n)
+    def extract_patches(self, x):
+        # x: [B, T, H, W] complex
+        B, T, H, W = x.shape
+        Px, Py = self.patch_size
 
+        pad_h = (Px - H % Px) % Px
+        pad_w = (Py - W % Py) % Py
 
-        if self.thres_coef.size(0) != nb:
-            if self.thres_coef.size(0) > nb:
-                thres_coef = self.thres_coef[:nb]
-            else:
-                new_coef = torch.full((nb - self.thres_coef.size(0),), -2.0,
-                                      dtype=self.thres_coef.dtype, device=self.thres_coef.device)
-                thres_coef = torch.cat([self.thres_coef, new_coef])
-                self.thres_coef = nn.Parameter(thres_coef)
-        else:
-            thres_coef = self.thres_coef
+        x_padded = F.pad(x, (0, pad_w, 0, pad_h))  # (left, right, top, bottom)
+        H_pad, W_pad = x_padded.shape[-2:]
 
-        thres = torch.sigmoid(thres_coef) * S[:, 0]  # (nb,)
-        thres = thres.unsqueeze(1)  # (nb, 1)
+        self.patch_info = {
+            'H': H, 'W': W,
+            'H_pad': H_pad, 'W_pad': W_pad,
+            'pad_h': pad_h, 'pad_w': pad_w,
+            'Px': Px, 'Py': Py,
+        }
 
+        x_reshaped = x_padded.reshape(B * T, 1, H_pad, W_pad)
+        patches = x_reshaped.unfold(2, Px, Px).unfold(3, Py, Py)
+        patches = patches.contiguous().view(B, T, -1, Px, Py)
+        return patches
 
-        S = torch.clamp(S, min=self.min_sigma)
-        S_thresh = F.relu(S - thres) + thres * torch.sigmoid(S - thres)  # (nb, nt)
+    def recover_patches(self, x):
+        # x: [B, T, N, Px, Py] complex
+        B, T, N, Px, Py = x.shape
+        info = self.patch_info
+        num_patches_x = info['H_pad'] // Px
+        num_patches_y = info['W_pad'] // Py
+        assert N == num_patches_x * num_patches_y
 
-        US = U * S_thresh.unsqueeze(2)  # (nb, nt, nt)
-        #print(f"US shape: {US.shape}")  # 应输出 (24, 25, 25)
+        x = x.view(B, T, num_patches_x, num_patches_y, Px, Py)
+        x = x.permute(0, 1, 2, 4, 3, 5).contiguous()
+        x = x.view(B, T, num_patches_x * Px, num_patches_y * Py)
+        return x[:, :, :info['H'], :info['W']]
 
-        #print(f"Vh shape: {Vh.shape}")  # 应输出 (24, 25, 1024)
+    def low_rank(self, L_complex):
+        nb, nt, n = L_complex.shape
+        q_batches = []
 
-        L_recon = torch.bmm(US, Vh)  # (nb, nt, n)
-        #print(f"L_recon shape: {L_recon.shape}")  # 应输出 (24, 25, 1024)
-        return L_recon
+        for i in range(0, nb, self.max_batch_size):
+            L_batch = L_complex[i:i + self.max_batch_size]
+            L_mag = torch.abs(L_batch)
+
+            U, S, Vh = torch.linalg.svd(L_mag, full_matrices=False)
+            s0 = S[:, 0:1]
+            thres_factor = self.thres_mlp(s0)
+            thres = thres_factor * s0
+
+            S = torch.clamp(S, min=self.min_sigma)
+            S_thresh = F.relu(S - thres) + thres * torch.sigmoid(S - thres)
+
+            US = U * S_thresh.unsqueeze(2)
+            L_mag_recon = torch.bmm(US, Vh)
+
+            phase = torch.angle(L_batch)
+            L_recon = L_mag_recon * torch.exp(1j * phase)
+
+            q_batches.append(L_recon)
+
+            del L_batch, L_mag, U, S, Vh, US, L_mag_recon, phase, L_recon
+            torch.cuda.empty_cache()
+
+        return torch.cat(q_batches, dim=0)
 
     def forward(self, x):
-        # x: (nb, nt, nx, ny) or (nb, nt, nx, ny, 1)
-        squeeze_last = False
+        """
+        x: Tensor of shape (B, T, H, W, 2) or (B, T, H, W) complex
+        """
+        is_realimag = False
         if x.ndim == 5:
-            x = x.squeeze(-1)
-            squeeze_last = True
+            x = torch.complex(x[..., 0], x[..., 1])
+            is_realimag = True
 
-        nb, nt, nx, ny = x.shape
-        L_flat = x.view(nb, nt, nx * ny)  # (nb, nt, nx*ny)
-        L_recon = self.low_rank(L_flat)  # (nb, nt, nx*ny)
-        L_out = L_recon.view(nb, nt, nx, ny)  # (nb, nt, nx, ny)
+        B, T, H, W = x.shape
+        patches = self.extract_patches(x)  # (B, T, N, Px, Py)
+        patches = patches.permute(0, 2, 1, 3, 4).contiguous()  # (B, N, T, Px, Py)
+        B, N, T, Px, Py = patches.shape
+        patches = patches.view(B * N, T, Px * Py)
 
-        if squeeze_last:
-            L_out = L_out.unsqueeze(-1)  # (nb, nt, nx, ny, 1)
+        patches_recon = self.low_rank(patches)
+        patches_recon = patches_recon.view(B, N, T, Px, Py).permute(0, 2, 1, 3, 4)  # (B, T, N, Px, Py)
 
-        return L_out
+        x_recon = self.recover_patches(patches_recon)
+
+        if is_realimag:
+            return torch.stack([x_recon.real, x_recon.imag], dim=-1)
+        return x_recon

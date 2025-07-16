@@ -18,6 +18,9 @@ def load_cmrxrecon_slice(file_path, frame_index):
         target = np.array(f["reconstruction_rss"])   # (num_frames, H, W)
 
         kspace_frame = kspace[frame_index]  # (num_coils, H, W)
+
+        print("kspace shape",kspace.shape)
+
         target_frame = target[frame_index]  # (H, W)
 
         attrs = {

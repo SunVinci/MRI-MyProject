@@ -100,8 +100,6 @@ class MulticoilForwardOp(nn.Module):
         self.smapper = Smaps()
 
     def forward(self, image, mask, smaps):
-        print(f"Image shape: {image.shape}")
-        print(f"Smaps shape: {smaps.shape}")
 
         coilimg = self.smapper(image, smaps)
         kspace = self.fft2(coilimg)
@@ -129,20 +127,16 @@ def ensure_complex_image(x):
         x = torch.view_as_real(x)
         if x.shape[-2] == 1:  # 特别情况：view_as_real 结果是 [..., 1, 2]
             x = x.squeeze(-2)  # 去掉多余的那一维
-        print("🔁 view_as_real →", x.shape)
         return x
 
     if x.ndim == 5 and x.shape[-1] == 1:
         x = x.squeeze(-1)  # (B, T, H, W)
-        print("🔁 squeezed →", x.shape)
 
     if x.ndim == 4:
         x = torch.stack([x, torch.zeros_like(x)], dim=-1)  # (B, T, H, W, 2)
-        print("🔁 stacked →", x.shape)
         return x
 
     if x.ndim == 5 and x.shape[-1] == 2:
-        print("✅ already (B,T,H,W,2) →", x.shape)
         return x
 
     raise ValueError(f"Invalid shape in ensure_complex_image: {x.shape}")
@@ -164,6 +158,7 @@ def center_crop_to_match(source, target):
             assert diff >= 0, f"维度 {i} 无法裁剪：source 比 target 小"
             start = diff // 2
             slices.append(slice(start, start + target.shape[i]))
+
 
     final_slices = [slice(None), slice(None)] + slices
     return source[tuple(final_slices)]

@@ -68,6 +68,7 @@ class PromptMRSample(NamedTuple):
 
     Args:
         masked_kspace: k-space after applying sampling mask.
+        kspace: full sampled k-space data.
         mask: The applied sampling mask.
         num_low_frequencies: The number of samples for the densely-sampled
             center.
@@ -76,9 +77,11 @@ class PromptMRSample(NamedTuple):
         slice_num: The slice index.
         max_value: Maximum image value.
         crop_size: The size to crop the final image.
+
     """
 
     masked_kspace: torch.Tensor
+    kspace: torch.Tensor
     mask: torch.Tensor
     num_low_frequencies: Optional[int]
     target: torch.Tensor
@@ -113,7 +116,7 @@ class PromptMrDataTransform:
         attrs: Dict,
         fname: str,
         slice_num: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, str, int, float]:
+    ) -> PromptMRSample:
         """
         Args:
             kspace: Input k-space of shape (num_coils, rows, cols) for
@@ -125,11 +128,8 @@ class PromptMrDataTransform:
             slice_num: Serial number of the slice.
 
         Returns:
-            A tuple containing, zero-filled input image, the reconstruction
-            target, the mean used for normalization, the standard deviations
-            used for normalization, the filename, and the slice number.
+            A PromptMRSample containing masked kspace, mask, target, and metadata.
         """
-
         if target is not None:
             target_torch = to_tensor(target)
             max_value = attrs["max"]
@@ -138,8 +138,8 @@ class PromptMrDataTransform:
             max_value = 0.0
 
         kspace_torch = to_tensor(kspace)
-        seed = None if not self.use_seed else tuple(map(ord, fname)) # so in validation, the same fname (volume) will have the same acc
-        #TODO: cine file does not have left padding
+        seed = None if not self.use_seed else tuple(map(ord, fname))  # so in validation, the same fname (volume) will have the same acc
+        # TODO: cine file does not have left padding
         acq_start = 0
         acq_end = attrs["padding_right"]
         crop_size = (attrs["recon_size"][0], attrs["recon_size"][1])
@@ -151,6 +151,7 @@ class PromptMrDataTransform:
 
             sample = PromptMRSample(
                 masked_kspace=masked_kspace,
+                kspace=kspace_torch,
                 mask=mask_torch.to(torch.bool),
                 num_low_frequencies=num_low_frequencies,
                 target=target_torch,
@@ -158,7 +159,6 @@ class PromptMrDataTransform:
                 slice_num=slice_num,
                 max_value=max_value,
                 crop_size=crop_size,
-                # attrs=attrs,
             )
         else:
             masked_kspace = kspace_torch
@@ -174,6 +174,7 @@ class PromptMrDataTransform:
 
             sample = PromptMRSample(
                 masked_kspace=masked_kspace,
+                kspace=kspace_torch,
                 mask=mask_torch.to(torch.bool),
                 num_low_frequencies=0,
                 target=target_torch,
@@ -181,10 +182,10 @@ class PromptMrDataTransform:
                 slice_num=slice_num,
                 max_value=max_value,
                 crop_size=crop_size,
-                # attrs=attrs,
             )
 
         return sample
+
     
 class FastmriKneePromptMrDataTransform:
     """
